@@ -827,7 +827,7 @@ public:
     ConfigOption*           clone() const override { return new ConfigOptionPercent(*this); }
     ConfigOptionPercent&    operator=(const ConfigOption *opt) { this->set(opt); return *this; }
     bool                    operator==(const ConfigOptionPercent &rhs) const { return this->value == rhs.value; }
-    double                  get_abs_value(double ratio_over) const { return ratio_over * this->value / 100; }
+    double                  get_abs_value(double ratio_over) const { return ratio_over * this->value / 100.; }
     
     std::string serialize() const override 
     {
@@ -1502,8 +1502,8 @@ public:
     // <min, max> limit of a numeric input.
     // If not set, the <min, max> is set to <INT_MIN, INT_MAX>
     // By setting min=0, only nonnegative input is allowed.
-    int                                 min = INT_MIN;
-    int                                 max = INT_MAX;
+    double                              min = INT_MIN;
+    double                              max = INT_MAX;
     ConfigOptionMode                    mode = comSimple;
     // Legacy names for this configuration option.
     // Used when parsing legacy configuration file.

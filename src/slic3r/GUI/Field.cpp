@@ -175,7 +175,7 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
 			if		(label.Last() == ':')	label.RemoveLast();
             show_error(m_parent, from_u8((boost::format(_utf8(L("%s doesn't support percentage"))) % label).str()));
 			set_value(double_to_string(m_opt.min), true);
-			m_value = double(m_opt.min);
+			m_value = m_opt.min;
 			break;
 		}
 		double val;
@@ -643,7 +643,7 @@ void SpinCtrl::BUILD() {
 		break;
 	}
 
-    const int min_val = m_opt.min == INT_MIN 
+    const double min_val = m_opt.min == INT_MIN 
 #ifdef __WXOSX__
     // We will forcibly set the input value for SpinControl, since the value 
     // inserted from the keyboard is not updated under OSX.
@@ -652,8 +652,8 @@ void SpinCtrl::BUILD() {
     // less then min_val.
     || m_opt.min > 0 
 #endif
-    ? 0 : m_opt.min;
-	const int max_val = m_opt.max < 2147483647 ? m_opt.max : 2147483647;
+    ? 0. : m_opt.min;
+	const double max_val = m_opt.max < 2147483647 ? m_opt.max : 2147483647.;
 
 	auto temp = new wxSpinCtrl(m_parent, wxID_ANY, text_value, wxDefaultPosition, size,
 		0|wxTE_PROCESS_ENTER, min_val, max_val, default_value);
@@ -987,11 +987,9 @@ void Choice::set_value(const boost::any& value, bool change_event)
         int val = boost::any_cast<int>(value);
         if (m_opt_id == "top_fill_pattern" || m_opt_id == "bottom_fill_pattern" || m_opt_id == "solid_fill_pattern"
             || m_opt_id == "fill_pattern" || m_opt_id == "support_material_interface_pattern" || m_opt_id == "brim_ears_pattern")
-        {
             val = idx_from_enum_value<InfillPattern>(val);
-        } else if (m_opt_id.compare("perimeter_loop_seam") == 0) {
+        else if (m_opt_id.compare("perimeter_loop_seam") == 0)
             val = idx_from_enum_value<SeamPosition>(val);
-        }
         else if (m_opt_id.compare("complete_objects_sort") == 0)
             val = idx_from_enum_value<CompleteObjectSort>(val);
         else if (m_opt_id.compare("gcode_flavor") == 0)
@@ -1006,6 +1004,8 @@ void Choice::set_value(const boost::any& value, bool change_event)
             val = idx_from_enum_value<DenseInfillAlgo>(val);
         else if (m_opt_id.compare("no_perimeter_unsupported_algo") == 0)
             val = idx_from_enum_value<NoPerimeterUnsupportedAlgo>(val);
+        else if (m_opt_id.compare("infill_connection") == 0)
+            val = idx_from_enum_value<InfillConnection>(val);
         else if (m_opt_id.compare("wipe_advanced_algo") == 0)
             val = idx_from_enum_value<WipeAlgo>(val);
         else if (m_opt_id.compare("support_material_contact_distance_type") == 0)
@@ -1091,6 +1091,8 @@ boost::any& Choice::get_value()
             convert_to_enum_value<DenseInfillAlgo>(ret_enum);
         else if (m_opt_id.compare("no_perimeter_unsupported_algo") == 0)
             convert_to_enum_value<NoPerimeterUnsupportedAlgo>(ret_enum);
+        else if (m_opt_id.compare("infill_connection") == 0)
+            convert_to_enum_value<InfillConnection>(ret_enum);
         else if (m_opt_id.compare("wipe_advanced_algo") == 0)
             convert_to_enum_value<WipeAlgo>(ret_enum);
         else if (m_opt_id.compare("support_material_contact_distance_type") == 0)
@@ -1163,14 +1165,21 @@ void Choice::msw_rescale(bool rescale_sidetext/* = false*/)
 
 void ColourPicker::BUILD()
 {
-	auto size = wxSize(def_width() * m_em_unit, wxDefaultCoord);
-    if (m_opt.height >= 0) size.SetHeight(m_opt.height*m_em_unit);
-    if (m_opt.width >= 0) size.SetWidth(m_opt.width*m_em_unit);
+    auto size = wxSize(def_width() * m_em_unit, wxDefaultCoord);
+    if (m_opt.height >= 0) size.SetHeight(m_opt.height * m_em_unit);
+    if (m_opt.width >= 0) size.SetWidth(m_opt.width * m_em_unit);
 
-	// Validate the color
-	wxString clr_str(m_opt.get_default_value<ConfigOptionStrings>()->get_at(m_opt_idx));
-	wxColour clr(clr_str);
-	if (clr_str.IsEmpty() || !clr.IsOk()) {
+    // Validate the color 
+    wxColour clr = wxTransparentColour;
+    if (m_opt.type == coStrings)
+        clr = wxColour{wxString{ m_opt.get_default_value<ConfigOptionStrings>()->get_at(m_opt_idx) }};
+    if (m_opt.type == coString)
+        clr = wxColour{ wxString{ m_opt.get_default_value<ConfigOptionString>()->value } };
+    if (m_opt.type == coInts)
+        clr = wxColour{ (unsigned long)m_opt.get_default_value<ConfigOptionInts>()->get_at(m_opt_idx) };
+    if (m_opt.type == coInt)
+        clr = wxColour{ (unsigned long)m_opt.get_default_value<ConfigOptionInt>()->value };
+	if (!clr.IsOk()) {
 		clr = wxTransparentColour;
 	}
 
@@ -1183,7 +1192,7 @@ void ColourPicker::BUILD()
 
 	temp->Bind(wxEVT_COLOURPICKER_CHANGED, ([this](wxCommandEvent e) { on_change_field(); }), temp->GetId());
 
-	temp->SetToolTip(get_tooltip_text(clr_str));
+	temp->SetToolTip(get_tooltip_text(clr.GetAsString()));
 }
 
 void ColourPicker::set_undef_value(wxColourPickerCtrl* field)
@@ -1386,9 +1395,9 @@ void SliderCtrl::BUILD()
 
 	auto temp = new wxBoxSizer(wxHORIZONTAL);
 
-	auto def_val = m_opt.get_default_value<ConfigOptionInt>()->value;
-	auto min = m_opt.min == INT_MIN ? 0 : m_opt.min;
-	auto max = m_opt.max == INT_MAX ? 100 : m_opt.max;
+	int def_val = m_opt.get_default_value<ConfigOptionInt>()->value;
+    int min = m_opt.min == INT_MIN ? 0 : int(m_opt.min);
+    int max = m_opt.max == INT_MAX ? 100 : int(m_opt.max);
 
 	m_slider = new wxSlider(m_parent, wxID_ANY, def_val * m_scale,
 							min * m_scale, max * m_scale,

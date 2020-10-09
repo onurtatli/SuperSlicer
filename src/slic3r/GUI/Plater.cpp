@@ -1244,7 +1244,7 @@ void Sidebar::update_sliced_info_sizer()
             if (ps.color_extruderid_to_used_filament.size() > 0) {
                 double total_length = 0;
                 for (int i = 0; i < ps.color_extruderid_to_used_filament.size(); i++) {
-                    new_label+= from_u8((boost::format("\n    - %1% %2%") % _utf8(L("Color")) % i ).str());
+                    new_label+= from_u8((boost::format("\n    - %1% %2%") % _utf8(L("Color")) % (i+1) ).str());
                     total_length += ps.color_extruderid_to_used_filament[i].second;
                     info_text += wxString::Format("\n%.2f (%.2f)", ps.color_extruderid_to_used_filament[i].second / 1000, total_length / 1000);
                 }
@@ -1260,7 +1260,7 @@ void Sidebar::update_sliced_info_sizer()
                 info_text = wxString::Format("%.2f", ps.total_weight);
                 double total_weight = 0;
                 for (int i = 0; i < ps.color_extruderid_to_used_weight.size(); i++) {
-                    new_label += from_u8((boost::format("\n    - %1% %2%") % _utf8(L("Color")) % i).str());
+                    new_label += from_u8((boost::format("\n    - %1% %2%") % _utf8(L("Color")) % (i + 1)).str());
                     total_weight += ps.color_extruderid_to_used_weight[i].second;
                     info_text += (ps.color_extruderid_to_used_weight[i].second == 0 ? "\nN/A": wxString::Format("\n%.2f", ps.color_extruderid_to_used_weight[i].second / 1000))
                         + (total_weight == 0 ? " (N/A)" : wxString::Format(" (%.2f)", total_weight / 1000));
@@ -1292,25 +1292,23 @@ void Sidebar::update_sliced_info_sizer()
                 wxString str_color = _(L("Color"));
                 wxString str_pause = _(L("Pause"));
 
-                auto fill_labels = [str_color, str_pause](const std::vector<std::pair<CustomGcodeType, std::string>>& times, 
+                auto fill_labels = [str_color, str_pause](const std::vector<std::pair<CustomGcodeType, float>>& times,
                                                           wxString& new_label, wxString& info_text)
                 {
-                    int color_change_count = 0;
-                    for (auto time : times)
-                        if (time.first == cgtColorChange)
-                            color_change_count++;
-
-                    for (int i = (int)times.size() - 1; i >= 0; --i)
+                    int color_change_count = 1;
+                    float time_from_beginning = 0;
+                    for (size_t i =  0; i < times.size(); ++i)
                     {
-                        if (i == 0 || times[i - 1].first == cgtPausePrint)
+                        if (times[i].first == cgtPausePrint)
                             new_label += from_u8((boost::format("\n      - %1%%2%") % (std::string(str_color.ToUTF8()) + " ") % color_change_count).str());
-                        else if (times[i - 1].first == cgtColorChange)
-                            new_label += from_u8((boost::format("\n      - %1%%2%") % (std::string(str_color.ToUTF8()) + " ") % color_change_count--).str());
+                        else if (times[i].first == cgtColorChange)
+                            new_label += from_u8((boost::format("\n      - %1%%2%") % (std::string(str_color.ToUTF8()) + " ") % color_change_count++).str());
 
                         if (i != (int)times.size() - 1 && times[i].first == cgtPausePrint)
                             new_label += from_u8((boost::format(" -> %1%") % std::string(str_pause.ToUTF8())).str());
 
-                        info_text += from_u8((boost::format("\n%1%") % times[i].second).str());
+                        time_from_beginning += times[i].second;
+                        info_text += from_u8((boost::format("\n%1% (%2%)") % get_time_dhm(times[i].second) % get_time_dhm(time_from_beginning)).str());
                     }
                 };
 
@@ -1522,7 +1520,7 @@ struct Plater::priv
             apply_wipe_tower();
         }
 
-        ArrangePolygon get_arrange_polygon(const Print &print) const
+        ArrangePolygon get_arrange_polygon(const PrintBase *print) const
         {
             Polygon p({
                 {coord_t(0), coord_t(0)},
@@ -1627,7 +1625,8 @@ struct Plater::priv
 
         // Set up arrange polygon for a ModelInstance and Wipe tower
         template<class T> ArrangePolygon get_arrange_poly(T *obj) const {
-            ArrangePolygon ap = obj->get_arrange_polygon(this->plater().fff_print);
+            ArrangePolygon ap = obj->get_arrange_polygon(
+                this->plater().printer_technology == ptFFF ? (PrintBase*)&this->plater().fff_print : (PrintBase*)&this->plater().sla_print);
             ap.priority       = 0;
             ap.bed_idx        = ap.translation.x() / bed_stride();
             ap.setter         = [obj, this](const ArrangePolygon &p) {
@@ -2888,7 +2887,8 @@ void Plater::priv::find_new_position(const ModelInstancePtrs &instances,
     for (const ModelObject *mo : model.objects)
         for (const ModelInstance *inst : mo->instances) {
             auto it = std::find(instances.begin(), instances.end(), inst);
-            auto arrpoly = inst->get_arrange_polygon(this->fff_print);
+            arrangement::ArrangePolygon arrpoly = inst->get_arrange_polygon(
+                this->printer_technology == ptFFF ? (PrintBase*)&this->fff_print : (PrintBase*)&this->sla_print);
 
             if (it == instances.end())
                 fixed.emplace_back(std::move(arrpoly));
@@ -2897,7 +2897,8 @@ void Plater::priv::find_new_position(const ModelInstancePtrs &instances,
         }
 
     if (updated_wipe_tower())
-        fixed.emplace_back(wipetower.get_arrange_polygon(this->fff_print));
+        fixed.emplace_back(wipetower.get_arrange_polygon(
+            this->printer_technology == ptFFF ? (PrintBase*)&this->fff_print : (PrintBase*)&this->sla_print));
 
     arrangement::arrange(movable, fixed, min_d, get_bed_shape_hint());
 
@@ -4660,6 +4661,9 @@ const Print&    Plater::fff_print() const   { return p->fff_print; }
 Print&          Plater::fff_print()         { return p->fff_print; }
 const SLAPrint& Plater::sla_print() const   { return p->sla_print; }
 SLAPrint&       Plater::sla_print()         { return p->sla_print; }
+const PrintBase* Plater::current_print() const {
+    return printer_technology() == ptFFF ? (PrintBase*)&p->fff_print : (PrintBase*)&p->sla_print;
+}
 
 void Plater::new_project()
 {
@@ -5131,7 +5135,19 @@ void Plater::export_3mf(const boost::filesystem::path& output_path)
     bool full_pathnames = wxGetApp().app_config->get("export_sources_full_pathnames") == "1";
 #if ENABLE_THUMBNAIL_GENERATOR
     ThumbnailData thumbnail_data;
-    p->generate_thumbnail(thumbnail_data, THUMBNAIL_SIZE_3MF.first, THUMBNAIL_SIZE_3MF.second, false, true, true, true);
+    
+    const DynamicPrintConfig* printer_config = wxGetApp().get_tab(Preset::TYPE_PRINTER)->get_config();
+    bool show_bed_on_thumbnails = true;
+    if (const ConfigOptionBool* conf = printer_config->option<ConfigOptionBool>("thumbnails_with_bed"))
+        show_bed_on_thumbnails = conf->value;
+    bool show_support_on_thumbnails = false;
+    if (const ConfigOptionBool* conf = printer_config->option<ConfigOptionBool>("thumbnails_with_support"))
+        show_support_on_thumbnails = conf->value;
+    p->generate_thumbnail(thumbnail_data, THUMBNAIL_SIZE_3MF.first, THUMBNAIL_SIZE_3MF.second, 
+        false, // printable_only
+        !show_support_on_thumbnails, // parts_only
+        show_bed_on_thumbnails, // show_bed
+        true); // transparent_background
     if (Slic3r::store_3mf(path_u8.c_str(), &p->model, export_config ? &cfg : nullptr, full_pathnames, &thumbnail_data)) {
 #else
     if (Slic3r::store_3mf(path_u8.c_str(), &p->model, export_config ? &cfg : nullptr, full_pathnames)) {

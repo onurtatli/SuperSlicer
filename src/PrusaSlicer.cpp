@@ -417,7 +417,8 @@ int CLI::run(int argc, char **argv)
                 PrintBase  *print = (printer_technology == ptFFF) ? static_cast<PrintBase*>(&fff_print) : static_cast<PrintBase*>(&sla_print);
                 if (! m_config.opt_bool("dont_arrange")) {
                     //FIXME make the min_object_distance configurable.
-                    model.arrange_objects(fff_print);
+                    print->apply(model, m_print_config); // arrange_objects needs that the print has the config
+                    model.arrange_objects(print);
                     model.center_instances_around_point((! user_center_specified && m_print_config.has("bed_shape")) ? 
                     	BoundingBoxf(m_print_config.opt<ConfigOptionPoints>("bed_shape")->values).center() : 
                     	m_config.option<ConfigOptionPoint>("center")->value);
@@ -442,7 +443,7 @@ int CLI::run(int argc, char **argv)
                             // The outfile is processed by a PlaceholderParser.
                             outfile = fff_print.export_gcode(outfile, nullptr);
                             outfile_final = fff_print.print_statistics().finalize_output_path(outfile);
-                        } else {
+                        } else if (printer_technology == ptSLA) {
                             outfile = sla_print.output_filepath(outfile);
                             // We need to finalize the filename beforehand because the export function sets the filename inside the zip metadata
                             outfile_final = sla_print.print_statistics().finalize_output_path(outfile);

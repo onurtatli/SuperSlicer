@@ -32,6 +32,7 @@ Fill* Fill::new_from_type(const InfillPattern type)
     case ipGyroid:              return new FillGyroid();
     case ipRectilinear:         return new FillRectilinear2();
 //  case ipRectilinear:         return new FillRectilinear();
+    case ipMonotonous:          return new FillMonotonous();
     case ipRectilinearWGapFill: return new FillRectilinear2WGapFill();
     case ipScatteredRectilinear:return new FillScatteredRectilinear();
     case ipLine:                return new FillLine();
@@ -146,7 +147,11 @@ std::pair<float, Point> Fill::_infill_direction(const Surface *surface) const
 
 void Fill::fill_surface_extrusion(const Surface *surface, const FillParams &params, ExtrusionEntitiesPtr &out) const {
     //add overlap & call fill_surface
-    Polylines polylines = this->fill_surface(surface, params);
+    Polylines polylines;
+    try {
+        polylines = this->fill_surface(surface, params);
+    } catch (InfillFailedException&) {
+    }
     if (polylines.empty())
         return;
     // ensure it doesn't over or under-extrude
@@ -264,7 +269,7 @@ bool collision(const Points &pts_to_check, const Polylines &polylines_blocker, c
     //convert to double to allow ² operation 
     double min_dist_square = (double)width * (double)width * 0.9 - SCALED_EPSILON;
     Polyline better_polylines(pts_to_check);
-    Points better_pts = better_polylines.equally_spaced_points(width / 2);
+    Points better_pts = better_polylines.equally_spaced_points(double(width / 2));
     for (const Point &p : better_pts) {
         for (const Polyline &poly2 : polylines_blocker) {
             for (const Point &p2 : poly2.points) {
@@ -584,16 +589,17 @@ Fill::do_gap_fill(const ExPolygons &gapfill_areas, const FillParams &params, Ext
     double max = 2. * params.flow->scaled_width();
     // collapse 
     //be sure we don't gapfill where the perimeters are already touching each other (negative spacing).
-    min = std::max(min, double(Flow::new_from_spacing(EPSILON, params.flow->nozzle_diameter, params.flow->height, false).scaled_width()));
+    min = std::max(min, double(Flow::new_from_spacing((float)EPSILON, (float)params.flow->nozzle_diameter, (float)params.flow->height, false).scaled_width()));
     //ExPolygons gapfill_areas_collapsed = diff_ex(
     //    offset2_ex(gapfill_areas, double(-min / 2), double(+min / 2)),
     //    offset2_ex(gapfill_areas, double(-max / 2), double(+max / 2)),
     //    true);
     ExPolygons gapfill_areas_collapsed = offset2_ex(gapfill_areas, double(-min / 2), double(+min / 2));
+    const double minarea = scale_(params.config->gap_fill_min_area.get_abs_value(params.flow->width) ) * params.flow->scaled_width();
     for (const ExPolygon &ex : gapfill_areas_collapsed) {
         //remove too small gaps that are too hard to fill.
         //ie one that are smaller than an extrusion with width of min and a length of max.
-        if (ex.area() > scale_(params.flow->nozzle_diameter)*scale_(params.flow->nozzle_diameter) * 2) {
+        if (ex.area() > minarea) {
             MedialAxis{ ex, params.flow->scaled_width() * 2, params.flow->scaled_width() / 5, coord_t(params.flow->height) }.build(polylines_gapfill);
         }
     }
@@ -813,7 +819,7 @@ void mark_boundary_segments_touching_infill(
 	EdgeGrid::Grid grid;
 	grid.set_bbox(boundary_bbox);
 	// Inflate the bounding box by a thick line width.
-	grid.create(boundary, clip_distance + scale_(10.));
+	grid.create(boundary, coord_t(clip_distance + scale_(10.)));
 
 	struct Visitor {
 		Visitor(const EdgeGrid::Grid &grid, const std::vector<Points> &boundary, std::vector<std::vector<ContourPointData>> &boundary_data, const double dist2_max) :
@@ -871,7 +877,7 @@ void mark_boundary_segments_touching_infill(
 	} visitor(grid, boundary, boundary_data, distance_colliding * distance_colliding);
 
 	BoundingBoxf bboxf(boundary_bbox.min.cast<double>(), boundary_bbox.max.cast<double>());
-	bboxf.offset(- SCALED_EPSILON);
+	bboxf.offset(coordf_t(-SCALED_EPSILON));
 
 	for (const Polyline &polyline : infill) {
 		// Clip the infill polyline by the Eucledian distance along the polyline.
@@ -940,7 +946,7 @@ void Fill::connect_infill(Polylines &&infill_ordered, const ExPolygon &boundary_
 	assert(! boundary_src.contour.points.empty());
 
 	BoundingBox bbox = get_extents(boundary_src.contour);
-	bbox.offset(SCALED_EPSILON);
+	bbox.offset(coordf_t(SCALED_EPSILON));
 
 	// 1) Add the end points of infill_ordered to boundary_src.
 	std::vector<Points>					   		boundary;
@@ -1005,6 +1011,7 @@ void Fill::connect_infill(Polylines &&infill_ordered, const ExPolygon &boundary_
 			[&boundary](const std::pair<size_t, size_t> &contour_point) {
 				return contour_point.first < boundary.size() && contour_point.second < boundary[contour_point.first].size();
 			}));
+        assert(boundary_data.size() == boundary_src.holes.size() + 1);
 #endif /* NDEBUG */
 	}
 
@@ -1019,7 +1026,7 @@ void Fill::connect_infill(Polylines &&infill_ordered, const ExPolygon &boundary_
 	// Connection from end of one infill line to the start of another infill line.
 	//const float length_max = scale_(spacing);
 //	const float length_max = scale_((2. / params.density) * spacing);
-	const float length_max = scale_((1000. / params.density) * spacing);
+	const coord_t length_max = scale_((1000. / params.density) * spacing);
 	std::vector<size_t> merged_with(infill_ordered.size());
 	for (size_t i = 0; i < merged_with.size(); ++ i)
 		merged_with[i] = i;
@@ -1049,15 +1056,29 @@ void Fill::connect_infill(Polylines &&infill_ordered, const ExPolygon &boundary_
 			}
 			assert(param_lo >= 0.f && param_lo <= param_end);
 			assert(param_hi >= 0.f && param_hi <= param_end);
-			double len = param_hi - param_lo;
+            coord_t len = coord_t(param_hi - param_lo);
 			if (len < length_max)
 				connections_sorted.emplace_back(idx_chain - 1, len, reversed);
-			len = param_lo + param_end - param_hi;
+			len = coord_t(param_lo + param_end - param_hi);
 			if (len < length_max)
 				connections_sorted.emplace_back(idx_chain - 1, len, ! reversed);
 		}
 	}
 	std::sort(connections_sorted.begin(), connections_sorted.end(), [](const ConnectionCost& l, const ConnectionCost& r) { return l.cost < r.cost; });
+
+    //mark point as used depends of connection parameter
+    if (params.connection == icOuterShell) {
+        for (auto it = boundary_data.begin() + 1; it != boundary_data.end(); ++it) {
+            for (ContourPointData& pt : *it) {
+                pt.point_consumed = true;
+            }
+        }
+    } else if (params.connection == icHoles) {
+        for (ContourPointData& pt : boundary_data[0]) {
+            pt.point_consumed = true;
+        }
+    }
+    assert(boundary_data.size() == boundary_src.holes.size() + 1);
 
 	size_t idx_chain_last = 0;
 	for (ConnectionCost &connection_cost : connections_sorted) {
